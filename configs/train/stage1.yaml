@@ -1,18 +1,18 @@
 data:
-  train_bs: 4
+  train_bs: 8
   train_width: 768 
   train_height: 768 
   meta_paths:
-    - "./data/fashion_meta.json"
+    - "./data/gfp_meta.json"
   # Margin of frame indexes between ref and tgt images
-  sample_margin: 30  
+  sample_margin: 64  
 
 solver:
   gradient_accumulation_steps: 1
   mixed_precision: 'fp16'
   enable_xformers_memory_efficient_attention: True 
   gradient_checkpointing: False 
-  max_train_steps: 30000
+  max_train_steps: 40000
   max_grad_norm: 1.0
   # lr
   learning_rate: 1.0e-5
@@ -28,7 +28,7 @@ solver:
   adam_epsilon: 1.0e-8
 
 val:
-  validation_steps: 200
+  validation_steps: 20000000000000000
 
 
 noise_scheduler_kwargs:
@@ -39,6 +39,7 @@ noise_scheduler_kwargs:
   steps_offset:        1
   clip_sample:         false
 
+# base_model_path: './pretrained_weights/stable-diffusion-v1-5'
 base_model_path: './pretrained_weights/sd-image-variations-diffusers'
 vae_model_path: './pretrained_weights/sd-vae-ft-mse'
 image_encoder_path: './pretrained_weights/sd-image-variations-diffusers/image_encoder'
@@ -47,13 +48,20 @@ controlnet_openpose_path: './pretrained_weights/control_v11p_sd15_openpose/diffu
 weight_dtype: 'fp16'  # [fp16, fp32]
 uncond_ratio: 0.1
 noise_offset: 0.05
-snr_gamma: 5.0
+# snr_gamma: 5.0
+snr_gamma: 0
 enable_zero_snr: True 
 pose_guider_pretrain: True 
 
 seed: 12580
 resume_from_checkpoint: ''
-checkpointing_steps: 2000
-save_model_epoch_interval: 5
+checkpointing_steps: 2250000000000000000000
+save_model_epoch_interval: 20
 exp_name: 'stage1'
-output_dir: './exp_output'  
+output_dir: '/data2/models/maa/gfp_0326'  
+
+
+# load_pth: true
+# denoising_unet_path: "/data2/models/maa/gfp/stage1/denoising_unet-18900.pth"
+# reference_unet_path: "/data2/models/maa/gfp/stage1/reference_unet-18900.pth"
+# pose_guider_path: "/data2/models/maa/gfp/stage1/pose_guider-18900.pth"

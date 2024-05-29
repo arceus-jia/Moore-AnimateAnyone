@@ -20,7 +20,7 @@ class HumanDanceVideoDataset(Dataset):
         width,
         height,
         img_scale=(1.0, 1.0),
-        img_ratio=(0.9, 1.0),
+        img_ratio=(1.0, 1.0),
         drop_ratio=0.1,
         data_meta_paths=["./data/fashion_meta.json"],
     ):
@@ -41,11 +41,8 @@ class HumanDanceVideoDataset(Dataset):
 
         self.pixel_transform = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
+                transforms.Resize(
                     (height, width),
-                    scale=self.img_scale,
-                    ratio=self.img_ratio,
-                    interpolation=transforms.InterpolationMode.BILINEAR,
                 ),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
@@ -54,11 +51,8 @@ class HumanDanceVideoDataset(Dataset):
 
         self.cond_transform = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
+                transforms.Resize(
                     (height, width),
-                    scale=self.img_scale,
-                    ratio=self.img_ratio,
-                    interpolation=transforms.InterpolationMode.BILINEAR,
                 ),
                 transforms.ToTensor(),
             ]
