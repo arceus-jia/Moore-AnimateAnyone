@@ -64,7 +64,7 @@ class Pose2ImagePipeline(DiffusionPipeline):
         )
         self.cond_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor,
-            do_convert_rgb=True,
+            do_convert_rgb=False,
             do_normalize=False,
         )
 
@@ -222,19 +222,25 @@ class Pose2ImagePipeline(DiffusionPipeline):
         batch_size = 1
 
         # Prepare clip image embeds
-        clip_image = self.clip_image_processor.preprocess(
-            ref_image.resize((224, 224)), return_tensors="pt"
-        ).pixel_values
-        clip_image_embeds = self.image_encoder(
-            clip_image.to(device, dtype=self.image_encoder.dtype)
-        ).image_embeds
-        image_prompt_embeds = clip_image_embeds.unsqueeze(1)
-        uncond_image_prompt_embeds = torch.zeros_like(image_prompt_embeds)
 
-        if do_classifier_free_guidance:
-            image_prompt_embeds = torch.cat(
-                [uncond_image_prompt_embeds, image_prompt_embeds], dim=0
-            )
+        use_clip = kwargs.get('use_clip') or False
+        
+        if use_clip:
+            clip_image = self.clip_image_processor.preprocess(
+                ref_image.resize((224, 224)), return_tensors="pt"
+            ).pixel_values
+            clip_image_embeds = self.image_encoder(
+                clip_image.to(device, dtype=self.image_encoder.dtype)
+            ).image_embeds
+            image_prompt_embeds = clip_image_embeds.unsqueeze(1)
+            uncond_image_prompt_embeds = torch.zeros_like(image_prompt_embeds)
+
+            if do_classifier_free_guidance:
+                image_prompt_embeds = torch.cat(
+                    [uncond_image_prompt_embeds, image_prompt_embeds], dim=0
+                )
+        else:
+            image_prompt_embeds = None
 
         reference_control_writer = ReferenceAttentionControl(
             self.reference_unet,
@@ -257,7 +263,7 @@ class Pose2ImagePipeline(DiffusionPipeline):
             num_channels_latents,
             width,
             height,
-            clip_image_embeds.dtype,
+            self.reference_unet.dtype,
             device,
             generator,
         )
@@ -296,10 +302,11 @@ class Pose2ImagePipeline(DiffusionPipeline):
             for i, t in enumerate(timesteps):
                 # 1. Forward reference image
                 if i == 0:
-                    self.reference_unet(
-                        ref_image_latents.repeat(
+                    ref_image_latents = ref_image_latents.repeat(
                             (2 if do_classifier_free_guidance else 1), 1, 1, 1
-                        ),
+                    )
+                    self.reference_unet(
+                        ref_image_latents,
                         torch.zeros_like(t),
                         encoder_hidden_states=image_prompt_embeds,
                         return_dict=False,
@@ -320,6 +327,7 @@ class Pose2ImagePipeline(DiffusionPipeline):
                     latent_model_input,
                     t,
                     encoder_hidden_states=image_prompt_embeds,
+                    # encoder_hidden_states=encoder_hidden_states,
                     pose_cond_fea=pose_fea,
                     return_dict=False,
                 )[0]

@@ -373,20 +373,26 @@ class Pose2VideoPipeline(DiffusionPipeline):
 
         batch_size = 1
 
-        # Prepare clip image embeds
-        clip_image = self.clip_image_processor.preprocess(
-            ref_image.resize((224, 224)), return_tensors="pt"
-        ).pixel_values
-        clip_image_embeds = self.image_encoder(
-            clip_image.to(device, dtype=self.image_encoder.dtype)
-        ).image_embeds
-        encoder_hidden_states = clip_image_embeds.unsqueeze(1)
-        uncond_encoder_hidden_states = torch.zeros_like(encoder_hidden_states)
+        use_clip = kwargs.get('use_clip') or False
+        print('use_clip??',use_clip)
 
-        if do_classifier_free_guidance:
-            encoder_hidden_states = torch.cat(
-                [uncond_encoder_hidden_states, encoder_hidden_states], dim=0
-            )
+        # Prepare clip image embeds
+        if use_clip:
+            clip_image = self.clip_image_processor.preprocess(
+                ref_image.resize((224, 224)), return_tensors="pt"
+            ).pixel_values
+            clip_image_embeds = self.image_encoder(
+                clip_image.to(device, dtype=self.image_encoder.dtype)
+            ).image_embeds
+            encoder_hidden_states = clip_image_embeds.unsqueeze(1)
+            uncond_encoder_hidden_states = torch.zeros_like(encoder_hidden_states)
+
+            if do_classifier_free_guidance:
+                encoder_hidden_states = torch.cat(
+                    [uncond_encoder_hidden_states, encoder_hidden_states], dim=0
+                )
+        else:
+            encoder_hidden_states = None
 
         reference_control_writer = ReferenceAttentionControl(
             self.reference_unet,
@@ -410,7 +416,7 @@ class Pose2VideoPipeline(DiffusionPipeline):
             width,
             height,
             video_length,
-            clip_image_embeds.dtype,
+            self.reference_unet.dtype,
             device,
             generator,
         )
@@ -464,10 +470,11 @@ class Pose2VideoPipeline(DiffusionPipeline):
 
                 # 1. Forward reference image
                 if i == 0:
-                    self.reference_unet(
-                        ref_image_latents.repeat(
+                    ref_image_latents = ref_image_latents.repeat(
                             (2 if do_classifier_free_guidance else 1), 1, 1, 1
-                        ),
+                    )                    
+                    self.reference_unet(
+                        ref_image_latents,
                         torch.zeros_like(t),
                         # t,
                         encoder_hidden_states=encoder_hidden_states,
@@ -508,6 +515,7 @@ class Pose2VideoPipeline(DiffusionPipeline):
                     )
 
                 for context in global_context:
+                    # print('context==',context)
                     # 3.1 expand the latents if we are doing classifier free guidance
                     latent_model_input = (
                         torch.cat([latents[:, :, c] for c in context])
@@ -525,7 +533,7 @@ class Pose2VideoPipeline(DiffusionPipeline):
                     pred = self.denoising_unet(
                         latent_model_input,
                         t,
-                        encoder_hidden_states=encoder_hidden_states[:b],
+                        encoder_hidden_states=encoder_hidden_states[:b] if use_clip else None,
                         pose_cond_fea=latent_pose_input,
                         return_dict=False,
                     )[0]
@@ -533,7 +541,6 @@ class Pose2VideoPipeline(DiffusionPipeline):
                     for j, c in enumerate(context):
                         noise_pred[:, :, c] = noise_pred[:, :, c] + pred
                         counter[:, :, c] = counter[:, :, c] + 1
-
                 # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = (noise_pred / counter).chunk(2)

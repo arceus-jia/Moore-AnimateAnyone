@@ -36,7 +36,6 @@ def get_down_block(
     use_motion_module=None,
     motion_module_type=None,
     motion_module_kwargs=None,
-    name_index=None,
 ):
     down_block_type = (
         down_block_type[7:]
@@ -65,8 +64,6 @@ def get_down_block(
             raise ValueError(
                 "cross_attention_dim must be specified for CrossAttnDownBlock3D"
             )
-        if name_index is not None:
-            name_index = f"CrossAttnDownBlock_{name_index}_"
         return CrossAttnDownBlock3D(
             num_layers=num_layers,
             in_channels=in_channels,
@@ -90,7 +87,6 @@ def get_down_block(
             use_motion_module=use_motion_module,
             motion_module_type=motion_module_type,
             motion_module_kwargs=motion_module_kwargs,
-            name=name_index,
         )
     raise ValueError(f"{down_block_type} does not exist.")
 
@@ -119,7 +115,6 @@ def get_up_block(
     use_motion_module=None,
     motion_module_type=None,
     motion_module_kwargs=None,
-    name_index=None,
 ):
     up_block_type = (
         up_block_type[7:] if up_block_type.startswith("UNetRes") else up_block_type
@@ -146,8 +141,6 @@ def get_up_block(
             raise ValueError(
                 "cross_attention_dim must be specified for CrossAttnUpBlock3D"
             )
-        if name_index is not None:
-            name_index = f"CrossAttnUpBlock_{name_index}_"
         return CrossAttnUpBlock3D(
             num_layers=num_layers,
             in_channels=in_channels,
@@ -171,7 +164,6 @@ def get_up_block(
             use_motion_module=use_motion_module,
             motion_module_type=motion_module_type,
             motion_module_kwargs=motion_module_kwargs,
-            name=name_index,
         )
     raise ValueError(f"{up_block_type} does not exist.")
 
@@ -200,7 +192,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         use_motion_module=None,
         motion_module_type=None,
         motion_module_kwargs=None,
-        name=None
     ):
         super().__init__()
 
@@ -209,7 +200,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         resnet_groups = (
             resnet_groups if resnet_groups is not None else min(in_channels // 4, 32)
         )
-        self.name = name
+
         # there is always at least one resnet
         resnets = [
             ResnetBlock3D(
@@ -228,13 +219,10 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         ]
         attentions = []
         motion_modules = []
-        for i in range(num_layers):
+
+        for _ in range(num_layers):
             if dual_cross_attention:
                 raise NotImplementedError
-            if self.name is not None:
-                attn_name = f"{self.name}_{i}_TransformerModel"
-            else:
-                attn_name = None
             attentions.append(
                 Transformer3DModel(
                     attn_num_head_channels,
@@ -247,7 +235,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     upcast_attention=upcast_attention,
                     unet_use_cross_frame_attention=unet_use_cross_frame_attention,
                     unet_use_temporal_attention=unet_use_temporal_attention,
-                    name=attn_name,
                 )
             )
             motion_modules.append(
@@ -285,8 +272,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         temb=None,
         encoder_hidden_states=None,
         attention_mask=None,
-        self_attention_additional_feats=None,
-        mode=None,
     ):
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet, motion_module in zip(
@@ -295,8 +280,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
             hidden_states = attn(
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
-                self_attention_additional_feats=self_attention_additional_feats,
-                mode=mode,
             ).sample
             hidden_states = (
                 motion_module(
@@ -338,7 +321,6 @@ class CrossAttnDownBlock3D(nn.Module):
         use_motion_module=None,
         motion_module_type=None,
         motion_module_kwargs=None,
-        name=None,
     ):
         super().__init__()
         resnets = []
@@ -347,7 +329,6 @@ class CrossAttnDownBlock3D(nn.Module):
 
         self.has_cross_attention = True
         self.attn_num_head_channels = attn_num_head_channels
-        self.name=name
 
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
@@ -368,10 +349,6 @@ class CrossAttnDownBlock3D(nn.Module):
             )
             if dual_cross_attention:
                 raise NotImplementedError
-            if self.name is not None:
-                attn_name = f"{self.name}_{i}_TransformerModel"
-            else:
-                attn_name = None
             attentions.append(
                 Transformer3DModel(
                     attn_num_head_channels,
@@ -385,7 +362,6 @@ class CrossAttnDownBlock3D(nn.Module):
                     upcast_attention=upcast_attention,
                     unet_use_cross_frame_attention=unet_use_cross_frame_attention,
                     unet_use_temporal_attention=unet_use_temporal_attention,
-                    name=attn_name,
                 )
             )
             motion_modules.append(
@@ -425,8 +401,6 @@ class CrossAttnDownBlock3D(nn.Module):
         temb=None,
         encoder_hidden_states=None,
         attention_mask=None,
-        self_attention_additional_feats=None,
-        mode=None,
     ):
         output_states = ()
 
@@ -451,27 +425,23 @@ class CrossAttnDownBlock3D(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    self_attention_additional_feats=self_attention_additional_feats,
-                    mode=mode,
+                    encoder_hidden_states,
                 )[0]
 
                 # add motion module
-                if motion_module is not None:
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(motion_module),
-                        hidden_states.requires_grad_(),
-                        temb,
-                        encoder_hidden_states,
+                hidden_states = (
+                    motion_module(
+                        hidden_states, temb, encoder_hidden_states=encoder_hidden_states
                     )
+                    if motion_module is not None
+                    else hidden_states
+                )
 
             else:
                 hidden_states = resnet(hidden_states, temb)
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    self_attention_additional_feats=self_attention_additional_feats,
-                    mode=mode,
                 ).sample
 
                 # add motion module
@@ -588,7 +558,7 @@ class DownBlock3D(nn.Module):
                         create_custom_forward(motion_module),
                         hidden_states.requires_grad_(),
                         temb,
-                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_hidden_states,
                     )
             else:
                 hidden_states = resnet(hidden_states, temb)
@@ -641,7 +611,6 @@ class CrossAttnUpBlock3D(nn.Module):
         use_inflated_groupnorm=None,
         motion_module_type=None,
         motion_module_kwargs=None,
-        name=None
     ):
         super().__init__()
         resnets = []
@@ -650,7 +619,6 @@ class CrossAttnUpBlock3D(nn.Module):
 
         self.has_cross_attention = True
         self.attn_num_head_channels = attn_num_head_channels
-        self.name = name
 
         for i in range(num_layers):
             res_skip_channels = in_channels if (i == num_layers - 1) else out_channels
@@ -673,10 +641,6 @@ class CrossAttnUpBlock3D(nn.Module):
             )
             if dual_cross_attention:
                 raise NotImplementedError
-            if self.name is not None:
-                attn_name = f"{self.name}_{i}_TransformerModel"
-            else:
-                attn_name = None
             attentions.append(
                 Transformer3DModel(
                     attn_num_head_channels,
@@ -690,7 +654,6 @@ class CrossAttnUpBlock3D(nn.Module):
                     upcast_attention=upcast_attention,
                     unet_use_cross_frame_attention=unet_use_cross_frame_attention,
                     unet_use_temporal_attention=unet_use_temporal_attention,
-                    name=attn_name,
                 )
             )
             motion_modules.append(
@@ -724,8 +687,6 @@ class CrossAttnUpBlock3D(nn.Module):
         encoder_hidden_states=None,
         upsample_size=None,
         attention_mask=None,
-        self_attention_additional_feats=None,
-        mode=None,
     ):
         for i, (resnet, attn, motion_module) in enumerate(
             zip(self.resnets, self.attentions, self.motion_modules)
@@ -749,13 +710,10 @@ class CrossAttnUpBlock3D(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(resnet), hidden_states, temb
                 )
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(attn, return_dict=False),
+                hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    self_attention_additional_feats=self_attention_additional_feats,
-                    mode=mode,
-                )[0]
+                ).sample
                 if motion_module is not None:
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(motion_module),
@@ -769,8 +727,6 @@ class CrossAttnUpBlock3D(nn.Module):
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    self_attention_additional_feats=self_attention_additional_feats,
-                    mode=mode,
                 ).sample
 
                 # add motion module

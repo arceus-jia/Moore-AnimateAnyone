@@ -99,9 +99,7 @@ class ReferenceAttentionControl:
             timestep: Optional[torch.LongTensor] = None,
             cross_attention_kwargs: Dict[str, Any] = None,
             class_labels: Optional[torch.LongTensor] = None,
-            video_length=None,
-            self_attention_additional_feats=None,
-            mode=None,
+            video_length=None
         ):
             if self.use_ada_layer_norm:  # False
                 norm_hidden_states = self.norm1(hidden_states, timestep)
@@ -189,8 +187,7 @@ class ReferenceAttentionControl:
                     else:
                         hidden_states = hidden_states_uc
 
-                    # self.bank.clear()
-                    if self.attn2 is not None:
+                    if self.attn2 is not None and encoder_hidden_states is not None:
                         # Cross-Attention
                         norm_hidden_states = (
                             self.norm2(hidden_states, timestep)
@@ -202,7 +199,7 @@ class ReferenceAttentionControl:
                                 norm_hidden_states,
                                 encoder_hidden_states=encoder_hidden_states,
                                 attention_mask=attention_mask,
-                            )
+                            ) 
                             + hidden_states
                         )
 
@@ -233,7 +230,7 @@ class ReferenceAttentionControl:
                 attn_output = gate_msa.unsqueeze(1) * attn_output
             hidden_states = attn_output + hidden_states
 
-            if self.attn2 is not None:
+            if self.attn2 is not None and encoder_hidden_states is not None:
                 norm_hidden_states = (
                     self.norm2(hidden_states, timestep)
                     if self.use_ada_layer_norm
@@ -301,7 +298,7 @@ class ReferenceAttentionControl:
                 module.bank = []
                 module.attn_weight = float(i) / float(len(attn_modules))
 
-    def update(self, writer, dtype=torch.float16):
+    def update(self, writer,do_classifier_free_guidance=False, dtype=torch.float16):
         if self.reference_attn:
             if self.fusion_blocks == "midup":
                 reader_attn_modules = [
@@ -337,8 +334,13 @@ class ReferenceAttentionControl:
                 writer_attn_modules, key=lambda x: -x.norm1.normalized_shape[0]
             )
             for r, w in zip(reader_attn_modules, writer_attn_modules):
-                r.bank = [v.clone().to(dtype) for v in w.bank]
-                # w.bank.clear()
+                if do_classifier_free_guidance:
+                    r.bank = [torch.cat([torch.zeros_like(v), v]).to(dtype) for v in w.bank]
+                else:
+                    r.bank = [v.clone().to(dtype) for v in w.bank]            
+            # for r, w in zip(reader_attn_modules, writer_attn_modules):
+            #     r.bank = [v.clone().to(dtype) for v in w.bank]
+            #     # w.bank.clear()
 
     def clear(self):
         if self.reference_attn:

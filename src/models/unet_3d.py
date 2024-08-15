@@ -12,10 +12,7 @@ import torch.utils.checkpoint
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.attention_processor import AttentionProcessor
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
-try:
-    from diffusers.modeling_utils import ModelMixin
-except:
-    from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import SAFETENSORS_WEIGHTS_NAME, WEIGHTS_NAME, BaseOutput, logging
 from safetensors.torch import load_file
 
@@ -81,8 +78,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         motion_module_kwargs={},
         unet_use_cross_frame_attention=None,
         unet_use_temporal_attention=None,
-        mode=None,
-        task_type="action",
     ):
         super().__init__()
 
@@ -123,10 +118,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         # down
         output_channel = block_out_channels[0]
         for i, down_block_type in enumerate(down_block_types):
-            if task_type == "action":
-                name_index, mid_name = None, None
-            else:
-                name_index, mid_name = i, "MidBlock"
             res = 2**i
             input_channel = output_channel
             output_channel = block_out_channels[i]
@@ -158,12 +149,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 and (not motion_module_decoder_only),
                 motion_module_type=motion_module_type,
                 motion_module_kwargs=motion_module_kwargs,
-                name_index=name_index,
             )
             self.down_blocks.append(down_block)
 
         # mid
-        
         if mid_block_type == "UNetMidBlock3DCrossAttn":
             self.mid_block = UNetMidBlock3DCrossAttn(
                 in_channels=block_out_channels[-1],
@@ -184,7 +173,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 use_motion_module=use_motion_module and motion_module_mid_block,
                 motion_module_type=motion_module_type,
                 motion_module_kwargs=motion_module_kwargs,
-                name=mid_name,
             )
         else:
             raise ValueError(f"unknown mid_block_type : {mid_block_type}")
@@ -200,12 +188,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         for i, up_block_type in enumerate(up_block_types):
             res = 2 ** (3 - i)
             is_final_block = i == len(block_out_channels) - 1
-            
-            if task_type == "action":
-                name_index = None
-            else:
-                name_index = i
-            
+
             prev_output_channel = output_channel
             output_channel = reversed_block_out_channels[i]
             input_channel = reversed_block_out_channels[
@@ -244,7 +227,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 and (res in motion_module_resolutions),
                 motion_module_type=motion_module_type,
                 motion_module_kwargs=motion_module_kwargs,
-                name_index=name_index,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -266,8 +248,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         self.conv_out = InflatedConv3d(
             block_out_channels[0], out_channels, kernel_size=3, padding=1
         )
-        
-        self.mode = mode
 
     @property
     # Copied from diffusers.models.unet_2d_condition.UNet2DConditionModel.attn_processors
@@ -425,7 +405,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
         mid_block_additional_residual: Optional[torch.Tensor] = None,
         return_dict: bool = True,
-        self_attention_additional_feats = None,
     ) -> Union[UNet3DConditionOutput, Tuple]:
         r"""
         Args:
@@ -516,8 +495,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
-                    self_attention_additional_feats=self_attention_additional_feats,
-                    mode=self.mode,
                 )
             else:
                 sample, res_samples = downsample_block(
@@ -547,8 +524,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             emb,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
-            self_attention_additional_feats=self_attention_additional_feats,
-            mode=self.mode,
         )
 
         if mid_block_additional_residual is not None:
@@ -579,8 +554,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     encoder_hidden_states=encoder_hidden_states,
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
-                    self_attention_additional_feats=self_attention_additional_feats,
-                    mode=self.mode,
                 )
             else:
                 sample = upsample_block(
@@ -609,6 +582,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         subfolder=None,
         unet_additional_kwargs=None,
         mm_zero_proj_out=False,
+        **kwargs
     ):
         pretrained_model_path = Path(pretrained_model_path)
         motion_module_path = Path(motion_module_path)
@@ -660,7 +634,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
 
         # load the motion module weights
         if motion_module_path.exists() and motion_module_path.is_file():
-            if motion_module_path.suffix.lower() in [".pth", ".pt", ".ckpt"]:
+            if motion_module_path.suffix.lower() in [".pth", ".pt", ".ckpt",".bin"]:
                 logger.info(f"Load motion module params from {motion_module_path}")
                 motion_state_dict = torch.load(
                     motion_module_path, map_location="cpu", weights_only=True
@@ -680,8 +654,36 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     new_motion_state_dict[k] = motion_state_dict[k]
                 motion_state_dict = new_motion_state_dict
 
+
+            # 去除 motion_state_dict 中 position encoding 部分的权重，因为是算的不是训的，不需要加载。加载的预训练的只有32长度, 自己训32以上
+            for weight_name in list(motion_state_dict.keys()):
+                if weight_name[-2:]== 'pe':
+                    del motion_state_dict[weight_name]
+                    # print(weight_name)
+ 
             # merge the state dicts
             state_dict.update(motion_state_dict)
+
+        #attn2 for audio ???
+        attn_path = kwargs.get('attn_path')
+        if attn_path is not None:
+            attn_path = Path(attn_path)
+            if attn_path.exists() and attn_path.is_file():
+                attn_state_dict = torch.load(
+                    attn_path, map_location="cpu", weights_only=True
+                )                
+                # for key in attn_state_dict.keys():
+                #     attn_state_dict[key] += 500
+
+                state_dict.update(attn_state_dict)
+                # print('keys..',attn_state_dict.keys())
+                # for key in attn_state_dict.keys():
+                #     print('key==',key)
+                #     input('x')
+                #     print('attn_state_dict==',attn_state_dict[key])
+                #     input('x')
+                #     print('state_dict==',state_dict[key])
+                #     input('x')
 
         # load the weights into the model
         m, u = model.load_state_dict(state_dict, strict=False)
